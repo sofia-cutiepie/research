@@ -1,0 +1,282 @@
+#include &lt;Servo.h&gt;
+#include &lt;OneWire.h&gt;
+#include &lt;DallasTemperature.h&gt;
+// ==========================================
+// 1. PIN CONFIGURATION - ARDUINO UNO
+// ==========================================
+// LDR Sensors
+const int LDR_TL = A0;
+const int LDR_TR = A1;
+const int LDR_BL = A2;
+const int LDR_BR = A3;
+// Soil Moisture Sensors
+const int SOIL1 = A4;
+const int SOIL2 = A5;
+// DS18B20 Temperature Sensor
+const int ONE_WIRE_BUS = 2;
+// Servo Motors
+const int HORIZONTAL_SERVO_PIN = 9;
+const int VERTICAL_SERVO_PIN = 10;
+const int IRRIGATION_SERVO_PIN = 11;
+// ==========================================
+// 2. SENSOR AND SERVO OBJECTS
+// ==========================================
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature temperatureSensors(&amp;oneWire);
+Servo horizontalServo;
+Servo verticalServo;
+Servo irrigationServo;
+// ==========================================
+// 3. SYSTEM SETTINGS
+// ==========================================
+// Soil calibration - adjust after testing
+const int DRY_VALUE = 800;
+const int WET_VALUE = 350;
+// Irrigation thresholds
+const int DRY_THRESHOLD = 40;
+
+const int WET_THRESHOLD = 50;
+// Solar tracking settings
+const int TRACKING_TOLERANCE = 40;
+const int SERVO_STEP = 1;
+// Servo limits
+const int SERVO_MIN = 10;
+const int SERVO_MAX = 170;
+// Irrigation servo positions
+const int VALVE_OPEN = 90;
+const int VALVE_CLOSED = 0;
+// Current servo positions
+int horizontalPosition = 90;
+int verticalPosition = 90;
+bool irrigationActive = false;
+// Sensor readings
+int moisture1 = 0;
+int moisture2 = 0;
+int averageMoisture = 0;
+float temperatureC = DEVICE_DISCONNECTED_C;
+// ==========================================
+// 4. TIMING SETTINGS
+// ==========================================
+unsigned long previousTracking = 0;
+unsigned long previousSoilReading = 0;
+unsigned long previousDisplay = 0;
+unsigned long temperatureReadyTime = 0;
+const unsigned long TRACKING_INTERVAL = 150;
+const unsigned long SOIL_INTERVAL = 1000;
+const unsigned long DISPLAY_INTERVAL = 2000;
+const unsigned long TEMPERATURE_INTERVAL = 2000;
+const unsigned long TEMPERATURE_CONVERSION = 750;
+bool temperatureConversionPending = false;
+// ==========================================
+// 5. SETUP
+
+// ==========================================
+void setup() {
+Serial.begin(9600);
+// Initialize temperature sensor
+temperatureSensors.begin();
+// Use asynchronous temperature conversion
+temperatureSensors.setWaitForConversion(false);
+// Attach servo motors
+horizontalServo.attach(HORIZONTAL_SERVO_PIN);
+verticalServo.attach(VERTICAL_SERVO_PIN);
+irrigationServo.attach(IRRIGATION_SERVO_PIN);
+// Set initial positions
+horizontalServo.write(horizontalPosition);
+verticalServo.write(verticalPosition);
+irrigationServo.write(VALVE_CLOSED);
+// Start first temperature conversion
+temperatureSensors.requestTemperatures();
+temperatureReadyTime = millis() + TEMPERATURE_CONVERSION;
+temperatureConversionPending = true;
+Serial.println(&quot;==================================&quot;);
+Serial.println(&quot;HYBRID RENEWABLE ENERGY SYSTEM&quot;);
+Serial.println(&quot;==================================&quot;);
+Serial.println(&quot;Arduino UNO Initialized&quot;);
+Serial.println(&quot;Solar Tracking: ACTIVE&quot;);
+Serial.println(&quot;Soil Monitoring: ACTIVE&quot;);
+Serial.println(&quot;Temperature Monitoring: ACTIVE&quot;);
+Serial.println(&quot;Automatic Irrigation: ACTIVE&quot;);
+Serial.println(&quot;==================================&quot;);
+}
+// ==========================================
+// 6. SOIL MOISTURE READING
+// ==========================================
+int readSoilMoisture(int sensorPin) {
+long total = 0;
+
+// Take 10 readings for better stability
+for (int i = 0; i &lt; 10; i++) {
+total += analogRead(sensorPin);
+}
+int rawValue = total / 10;
+int moisture = map(
+rawValue,
+DRY_VALUE,
+WET_VALUE,
+0,
+100
+);
+moisture = constrain(moisture, 0, 100);
+return moisture;
+}
+// ==========================================
+// 7. SOLAR TRACKING SYSTEM
+// ==========================================
+void solarTracking() {
+int topLeft = analogRead(LDR_TL);
+int topRight = analogRead(LDR_TR);
+int bottomLeft = analogRead(LDR_BL);
+int bottomRight = analogRead(LDR_BR);
+int leftAverage = (topLeft + bottomLeft) / 2;
+int rightAverage = (topRight + bottomRight) / 2;
+int topAverage = (topLeft + topRight) / 2;
+int bottomAverage = (bottomLeft + bottomRight) / 2;
+// Horizontal tracking
+if (leftAverage &gt; rightAverage + TRACKING_TOLERANCE) {
+horizontalPosition += SERVO_STEP;
+}
+else if (rightAverage &gt; leftAverage + TRACKING_TOLERANCE) {
+horizontalPosition -= SERVO_STEP;
+}
+
+// Vertical tracking
+if (topAverage &gt; bottomAverage + TRACKING_TOLERANCE) {
+verticalPosition += SERVO_STEP;
+}
+else if (bottomAverage &gt; topAverage + TRACKING_TOLERANCE) {
+verticalPosition -= SERVO_STEP;
+}
+// Protect servo movement limits
+horizontalPosition = constrain(
+horizontalPosition,
+SERVO_MIN,
+SERVO_MAX
+);
+verticalPosition = constrain(
+verticalPosition,
+SERVO_MIN,
+SERVO_MAX
+);
+// Update servo motors
+horizontalServo.write(horizontalPosition);
+verticalServo.write(verticalPosition);
+}
+// ==========================================
+// 8. TEMPERATURE MONITORING
+// ==========================================
+void temperatureMonitoring() {
+unsigned long currentTime = millis();
+// Check if temperature conversion is finished
+if (temperatureConversionPending &amp;&amp;
+(long)(currentTime - temperatureReadyTime) &gt;= 0) {
+temperatureC = temperatureSensors.getTempCByIndex(0);
+// Start the next conversion
+temperatureSensors.requestTemperatures();
+
+temperatureReadyTime = currentTime + TEMPERATURE_CONVERSION;
+temperatureConversionPending = true;
+}
+// Start a conversion if none is pending
+if (!temperatureConversionPending) {
+temperatureSensors.requestTemperatures();
+temperatureReadyTime = currentTime + TEMPERATURE_CONVERSION;
+temperatureConversionPending = true;
+}
+}
+// ==========================================
+// 9. AUTOMATIC IRRIGATION
+// ==========================================
+void automaticIrrigation() {
+averageMoisture = (moisture1 + moisture2) / 2;
+// Activate irrigation when soil is dry
+if (averageMoisture &lt;= DRY_THRESHOLD &amp;&amp;
+!irrigationActive) {
+irrigationServo.write(VALVE_OPEN);
+irrigationActive = true;
+Serial.println(&quot;SOIL IS DRY&quot;);
+Serial.println(&quot;IRRIGATION ACTIVATED&quot;);
+}
+// Stop irrigation when soil is sufficiently wet
+else if (averageMoisture &gt;= WET_THRESHOLD &amp;&amp;
+irrigationActive) {
+irrigationServo.write(VALVE_CLOSED);
+irrigationActive = false;
+
+Serial.println(&quot;SOIL MOISTURE SUFFICIENT&quot;);
+Serial.println(&quot;IRRIGATION STOPPED&quot;);
+}
+}
+// ==========================================
+// 10. DISPLAY SYSTEM INFORMATION
+// ==========================================
+void displayMonitoringData() {
+Serial.println(&quot;\n==================================&quot;);
+Serial.println(&quot;REAL-TIME SYSTEM MONITORING&quot;);
+Serial.println(&quot;==================================&quot;);
+// Soil moisture
+Serial.print(&quot;Soil Moisture 1: &quot;);
+Serial.print(moisture1);
+Serial.println(&quot;%&quot;);
+Serial.print(&quot;Soil Moisture 2: &quot;);
+Serial.print(moisture2);
+Serial.println(&quot;%&quot;);
+Serial.print(&quot;Average Moisture: &quot;);
+Serial.print(averageMoisture);
+Serial.println(&quot;%&quot;);
+// Temperature
+Serial.println(&quot;\n--- TEMPERATURE ---&quot;);
+if (temperatureSensors.getDeviceCount() == 0) {
+Serial.println(&quot;Temperature Sensor Not Detected&quot;);
+}
+else if (temperatureC == DEVICE_DISCONNECTED_C) {
+Serial.println(&quot;Temperature Sensor Disconnected&quot;);
+}
+else {
+Serial.print(&quot;Temperature: &quot;);
+Serial.print(temperatureC);
+
+Serial.println(&quot; C&quot;);
+}
+// Solar tracking
+Serial.println(&quot;\n--- SOLAR TRACKING ---&quot;);
+Serial.print(&quot;Horizontal Position: &quot;);
+Serial.println(horizontalPosition);
+Serial.print(&quot;Vertical Position: &quot;);
+Serial.println(verticalPosition);
+// Irrigation
+Serial.println(&quot;\n--- IRRIGATION STATUS ---&quot;);
+if (irrigationActive) {
+Serial.println(&quot;IRRIGATION: ACTIVE&quot;);
+}
+else {
+Serial.println(&quot;IRRIGATION: INACTIVE&quot;);
+}
+Serial.println(&quot;==================================&quot;);
+}
+// ==========================================
+// 11. MAIN LOOP
+// ==========================================
+void loop() {
+unsigned long currentTime = millis();
+// Temperature monitoring
+temperatureMonitoring();
+// Solar tracking
+if (currentTime - previousTracking &gt;= TRACKING_INTERVAL) {
+previousTracking = currentTime;
+solarTracking();
+
+}
+// Soil moisture monitoring and irrigation
+if (currentTime - previousSoilReading &gt;= SOIL_INTERVAL) {
+previousSoilReading = currentTime;
+moisture1 = readSoilMoisture(SOIL1);
+moisture2 = readSoilMoisture(SOIL2);
+automaticIrrigation();
+}
+// Display system information
+if (currentTime - previousDisplay &gt;= DISPLAY_INTERVAL) {
+previousDisplay = currentTime;
+displayMonitoringData();
+}
+}
